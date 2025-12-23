@@ -139,6 +139,8 @@ export class OpenAIRealtimeService {
       });
     });
 
+    let hasGreeted = false;
+    
     ws.on('message', async (data: WebSocket.Data) => {
       try {
         const event: RealtimeEvent = JSON.parse(data.toString());
@@ -155,6 +157,15 @@ export class OpenAIRealtimeService {
         }
         if (event.type === 'response.audio_transcript.done') {
           console.log(`[AI said]: ${event.transcript}`);
+        }
+        
+        // When session is updated successfully, trigger initial greeting (only once)
+        if (event.type === 'session.updated' && !hasGreeted) {
+          hasGreeted = true;
+          // Wait a moment then trigger the AI to start speaking
+          setTimeout(() => {
+            this.triggerInitialGreeting(conversationId, context);
+          }, 500);
         }
         
         // Handle tool calls
@@ -297,6 +308,48 @@ export class OpenAIRealtimeService {
         },
       },
     });
+  }
+
+  // Trigger AI to greet the patient when call connects
+  triggerInitialGreeting(conversationId: string, context: ConversationContext): void {
+    console.log(`Triggering initial greeting for ${conversationId} in ${context.language}`);
+    
+    // Create a system message to prompt the greeting
+    const greetingPrompt = this.getGreetingPrompt(context.language, context.agentName);
+    
+    // Add a conversation item to prompt the AI to speak first
+    this.sendEvent(conversationId, {
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: greetingPrompt,
+          },
+        ],
+      },
+    });
+    
+    // Trigger a response
+    this.sendEvent(conversationId, {
+      type: 'response.create',
+    });
+  }
+
+  // Get greeting prompt based on language
+  private getGreetingPrompt(language: string, agentName: string): string {
+    const prompts: Record<string, string> = {
+      'tr': `[SISTEM: Arama bağlandı. Şimdi hastayı selamla. Kısa ve samimi ol. Örnek: "Merhaba, Natural Clinic'ten ${agentName} 👋 Size nasıl yardımcı olabilirim?"]`,
+      'en': `[SYSTEM: Call connected. Now greet the patient. Be brief and friendly. Example: "Hello, this is ${agentName} from Natural Clinic 👋 How can I help you today?"]`,
+      'de': `[SYSTEM: Anruf verbunden. Begrüßen Sie jetzt den Patienten. Kurz und freundlich. Beispiel: "Hallo, hier ist ${agentName} von Natural Clinic 👋 Wie kann ich Ihnen helfen?"]`,
+      'ar': `[SYSTEM: تم توصيل المكالمة. رحب الآن بالمريض. كن موجزاً وودوداً. مثال: "مرحباً، أنا ${agentName} من Natural Clinic 👋 كيف يمكنني مساعدتك؟"]`,
+      'fr': `[SYSTEM: Appel connecté. Saluez maintenant le patient. Soyez bref et amical. Exemple: "Bonjour, ici ${agentName} de Natural Clinic 👋 Comment puis-je vous aider?"]`,
+      'ru': `[SYSTEM: Звонок подключен. Поприветствуйте пациента. Будьте кратки и дружелюбны. Пример: "Здравствуйте, это ${agentName} из Natural Clinic 👋 Чем могу помочь?"]`,
+    };
+    
+    return prompts[language] || prompts['en'];
   }
 
   closeSession(conversationId: string): void {
