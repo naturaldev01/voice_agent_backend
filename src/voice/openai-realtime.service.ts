@@ -46,7 +46,7 @@ export class OpenAIRealtimeService {
       return 'shimmer';
     }
   }
-
+//4o-realtime-preview-2024-12-17
   async createSession(
     conversationId: string,
     context: ConversationContext,
@@ -145,7 +145,10 @@ export class OpenAIRealtimeService {
       try {
         const event: RealtimeEvent = JSON.parse(data.toString());
         
-        // Debug: Log important events
+        // Debug: Log ALL events for debugging
+        console.log(`[OpenAI Event] ${event.type}`);
+        
+        // Debug: Log important events with details
         if (event.type === 'session.created' || event.type === 'session.updated') {
           console.log(`[OpenAI] ${event.type}:`, JSON.stringify(event, null, 2).substring(0, 500));
         }
@@ -158,14 +161,35 @@ export class OpenAIRealtimeService {
         if (event.type === 'response.audio_transcript.done') {
           console.log(`[AI said]: ${event.transcript}`);
         }
+        if (event.type === 'response.audio.delta') {
+          console.log(`[OpenAI] Audio delta received, length: ${event.delta?.length || 0}`);
+        }
+        if (event.type === 'input_audio_buffer.speech_started') {
+          console.log(`[OpenAI] User started speaking`);
+        }
+        if (event.type === 'input_audio_buffer.speech_stopped') {
+          console.log(`[OpenAI] User stopped speaking`);
+        }
+        if (event.type === 'conversation.item.input_audio_transcription.failed') {
+          console.error(`[OpenAI] Transcription FAILED:`, JSON.stringify(event, null, 2));
+        }
+        if (event.type === 'response.done') {
+          console.log(`[OpenAI] Response done - Full event:`, JSON.stringify(event, null, 2).substring(0, 1500));
+        }
         
         // When session is updated successfully, trigger initial greeting (only once)
         if (event.type === 'session.updated' && !hasGreeted) {
           hasGreeted = true;
+          console.log(`[OpenAI] Session updated, will trigger greeting in 1s for ${conversationId}`);
           // Wait a moment then trigger the AI to start speaking
           setTimeout(() => {
-            this.triggerInitialGreeting(conversationId, context);
-          }, 500);
+            if (this.isConnected(conversationId)) {
+              console.log(`[OpenAI] Triggering greeting now for ${conversationId}`);
+              this.triggerInitialGreeting(conversationId, context);
+            } else {
+              console.log(`[OpenAI] Cannot trigger greeting - connection closed for ${conversationId}`);
+            }
+          }, 1000);
         }
         
         // Handle tool calls
@@ -314,39 +338,28 @@ export class OpenAIRealtimeService {
   triggerInitialGreeting(conversationId: string, context: ConversationContext): void {
     console.log(`Triggering initial greeting for ${conversationId} in ${context.language}`);
     
-    // Create a system message to prompt the greeting
-    const greetingPrompt = this.getGreetingPrompt(context.language, context.agentName);
+    // Get greeting instruction
+    const greetingInstruction = this.getGreetingPrompt(context.language, context.agentName);
     
-    // Add a conversation item to prompt the AI to speak first
-    this.sendEvent(conversationId, {
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: greetingPrompt,
-          },
-        ],
-      },
-    });
-    
-    // Trigger a response
+    // Trigger a response with specific instructions to greet
     this.sendEvent(conversationId, {
       type: 'response.create',
+      response: {
+        modalities: ['text', 'audio'],
+        instructions: greetingInstruction,
+      },
     });
   }
 
   // Get greeting prompt based on language
   private getGreetingPrompt(language: string, agentName: string): string {
     const prompts: Record<string, string> = {
-      'tr': `[SISTEM: Arama bağlandı. Şimdi hastayı selamla. Kısa ve samimi ol. Örnek: "Merhaba, Natural Clinic'ten ${agentName} 👋 Size nasıl yardımcı olabilirim?"]`,
-      'en': `[SYSTEM: Call connected. Now greet the patient. Be brief and friendly. Example: "Hello, this is ${agentName} from Natural Clinic 👋 How can I help you today?"]`,
-      'de': `[SYSTEM: Anruf verbunden. Begrüßen Sie jetzt den Patienten. Kurz und freundlich. Beispiel: "Hallo, hier ist ${agentName} von Natural Clinic 👋 Wie kann ich Ihnen helfen?"]`,
-      'ar': `[SYSTEM: تم توصيل المكالمة. رحب الآن بالمريض. كن موجزاً وودوداً. مثال: "مرحباً، أنا ${agentName} من Natural Clinic 👋 كيف يمكنني مساعدتك؟"]`,
-      'fr': `[SYSTEM: Appel connecté. Saluez maintenant le patient. Soyez bref et amical. Exemple: "Bonjour, ici ${agentName} de Natural Clinic 👋 Comment puis-je vous aider?"]`,
-      'ru': `[SYSTEM: Звонок подключен. Поприветствуйте пациента. Будьте кратки и дружелюбны. Пример: "Здравствуйте, это ${agentName} из Natural Clinic 👋 Чем могу помочь?"]`,
+      'tr': `Hastayı selamla. Kendini ${agentName} olarak tanıt ve Natural Clinic'ten aradığını söyle. Kısa ve samimi ol.`,
+      'en': `Greet the patient. Introduce yourself as ${agentName} from Natural Clinic. Be brief and friendly.`,
+      'de': `Begrüßen Sie den Patienten. Stellen Sie sich als ${agentName} von Natural Clinic vor. Kurz und freundlich.`,
+      'ar': `رحب بالمريض. قدم نفسك باسم ${agentName} من Natural Clinic. كن موجزاً وودوداً.`,
+      'fr': `Saluez le patient. Présentez-vous comme ${agentName} de Natural Clinic. Soyez bref et amical.`,
+      'ru': `Поприветствуйте пациента. Представьтесь как ${agentName} из Natural Clinic. Будьте кратки и дружелюбны.`,
     };
     
     return prompts[language] || prompts['en'];

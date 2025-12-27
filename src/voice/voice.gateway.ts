@@ -13,7 +13,7 @@ import { OpenAIRealtimeService, RealtimeEvent } from './openai-realtime.service'
 
 @WebSocketGateway({
   cors: {
-    origin: ['http://localhost:3007', 'http://localhost:3008'],
+    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002', 'http://localhost:3003', 'http://localhost:3004', 'http://localhost:3007', 'http://localhost:3008'],
     credentials: true,
   },
   namespace: '/voice',
@@ -71,15 +71,8 @@ export class VoiceGateway implements OnGatewayConnection, OnGatewayDisconnect {
         language: context.language,
       });
       
-      // Trigger initial greeting
-      setTimeout(() => {
-        this.openaiRealtimeService.sendEvent(context.conversationId, {
-          type: 'response.create',
-          response: {
-            modalities: ['text', 'audio'],
-          },
-        });
-      }, 500);
+      // Note: Initial greeting is triggered by openai-realtime.service.ts 
+      // when session.updated event is received from OpenAI
       
     } catch (error) {
       console.error('Error starting conversation:', error);
