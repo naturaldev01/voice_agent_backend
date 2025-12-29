@@ -26,6 +26,8 @@ async function bootstrap() {
       'http://localhost:3004',
       'http://localhost:3007',
       'http://localhost:3008',
+      // Production URLs
+      'https://voice-agent-frontend-w97n.vercel.app',
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true,
