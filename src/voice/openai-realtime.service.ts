@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import WebSocket from 'ws';
 import { VoiceService, ConversationContext } from './voice.service';
@@ -9,7 +9,8 @@ export interface RealtimeEvent {
 }
 
 @Injectable()
-export class OpenAIRealtimeService {
+export class OpenAIRealtimeService implements OnModuleDestroy {
+  private readonly logger = new Logger(OpenAIRealtimeService.name);
   private readonly OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime';
   private connections: Map<string, WebSocket> = new Map();
   private apiKey: string;
@@ -19,6 +20,35 @@ export class OpenAIRealtimeService {
     private voiceService: VoiceService,
   ) {
     this.apiKey = this.configService.get<string>('OPENAI_API_KEY') || '';
+  }
+
+  async onModuleDestroy() {
+    this.logger.log('Gracefully shutting down OpenAI connections...');
+    
+    const closePromises: Promise<void>[] = [];
+    
+    for (const [conversationId, ws] of this.connections) {
+      closePromises.push(
+        new Promise<void>((resolve) => {
+          try {
+            this.voiceService.endConversation(conversationId, 'Server shutdown');
+            ws.close(1000, 'Server shutdown');
+            this.logger.log(`Closed connection for conversation: ${conversationId}`);
+          } catch (error) {
+            this.logger.error(`Error closing connection ${conversationId}:`, error);
+          }
+          resolve();
+        }),
+      );
+    }
+    
+    await Promise.all(closePromises);
+    this.connections.clear();
+    this.logger.log('All OpenAI connections closed');
+  }
+
+  getActiveConnectionCount(): number {
+    return this.connections.size;
   }
 
   // Map language codes to Whisper language codes (ISO 639-1 codes)

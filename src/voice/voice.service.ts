@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import OpenAI from 'openai';
 import { SupabaseService } from '../supabase/supabase.service';
 
 export interface ConversationContext {
@@ -26,9 +28,18 @@ export interface ConversationContext {
 
 @Injectable()
 export class VoiceService {
+  private readonly logger = new Logger(VoiceService.name);
   private conversations: Map<string, ConversationContext> = new Map();
+  private openai: OpenAI;
 
-  constructor(private supabaseService: SupabaseService) {}
+  constructor(
+    private supabaseService: SupabaseService,
+    private configService: ConfigService,
+  ) {
+    this.openai = new OpenAI({
+      apiKey: this.configService.get<string>('OPENAI_API_KEY'),
+    });
+  }
 
   async initializeConversation(language: string = 'en'): Promise<ConversationContext> {
     // Get random agent with name and gender for the detected language
@@ -146,17 +157,126 @@ export class VoiceService {
     }
   }
 
-  async endConversation(conversationId: string, summary?: string): Promise<void> {
+  async endConversation(conversationId: string, providedSummary?: string): Promise<void> {
     const context = this.conversations.get(conversationId);
     if (context) {
+      let summary = providedSummary;
+      
+      // Generate AI summary if not provided and there's conversation history
+      if (!summary && context.messageHistory.length > 0) {
+        try {
+          summary = await this.generateConversationSummary(context);
+          this.logger.log(`Generated summary for conversation ${conversationId}`);
+        } catch (error) {
+          this.logger.error(`Failed to generate summary: ${error.message}`);
+        }
+      }
+      
+      // Calculate lead score
+      const leadScore = this.calculateLeadScore(context);
+      
       await this.supabaseService.updateConversation(conversationId, {
         status: 'completed',
         ended_at: new Date().toISOString(),
         summary,
+        lead_score: leadScore.score,
+        lead_status: leadScore.status,
       });
       
       this.conversations.delete(conversationId);
     }
+  }
+
+  private async generateConversationSummary(context: ConversationContext): Promise<string> {
+    const conversationText = context.messageHistory
+      .slice(-20) // Last 20 messages
+      .map((m) => `${m.role === 'user' ? 'Patient' : 'Agent'}: ${m.content}`)
+      .join('\n');
+
+    const patientInfo = context.patientInfo;
+
+    const prompt = `Summarize this medical consultation conversation in a structured format.
+
+Patient Information Collected:
+- Name: ${patientInfo.fullName || 'Not provided'}
+- Age: ${patientInfo.age || 'Not provided'}
+- Phone: ${patientInfo.phone || 'Not provided'}
+- Email: ${patientInfo.email || 'Not provided'}
+- Country: ${patientInfo.country || 'Not provided'}
+- Interested Treatments: ${patientInfo.interestedTreatments?.join(', ') || 'Not specified'}
+
+Conversation:
+${conversationText}
+
+Please provide a brief summary (max 200 words) including:
+1. Main treatment interest
+2. Key patient concerns
+3. Information collected status
+4. Recommended next steps
+5. Overall patient sentiment (positive/neutral/hesitant)
+
+Write in a professional medical CRM style.`;
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a medical CRM assistant. Summarize patient consultations briefly and professionally.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 300,
+        temperature: 0.3,
+      });
+
+      return response.choices[0]?.message?.content || 'Summary generation failed';
+    } catch (error) {
+      this.logger.error('OpenAI summary generation error:', error);
+      throw error;
+    }
+  }
+
+  private calculateLeadScore(context: ConversationContext): { score: number; status: 'hot' | 'warm' | 'cold' } {
+    let score = 0;
+    const info = context.patientInfo;
+
+    // Contact information (up to 30 points)
+    if (info.fullName) score += 10;
+    if (info.phone) score += 15;
+    if (info.email) score += 5;
+
+    // Personal details (up to 15 points)
+    if (info.age) score += 5;
+    if (info.country) score += 5;
+    if (info.city) score += 5;
+
+    // Treatment interest (up to 30 points)
+    if (info.interestedTreatments && info.interestedTreatments.length > 0) {
+      score += 15;
+      // High-value treatments
+      const highValueTreatments = ['hair transplant', 'dental', 'bariatric', 'plastic surgery', 'rhinoplasty'];
+      const hasHighValue = info.interestedTreatments.some((t) =>
+        highValueTreatments.some((hv) => t.toLowerCase().includes(hv)),
+      );
+      if (hasHighValue) score += 15;
+    }
+
+    // Engagement (up to 25 points based on message count)
+    const messageCount = context.messageHistory.filter((m) => m.role === 'user').length;
+    if (messageCount >= 10) score += 25;
+    else if (messageCount >= 5) score += 15;
+    else if (messageCount >= 3) score += 10;
+    else if (messageCount >= 1) score += 5;
+
+    // Determine status
+    let status: 'hot' | 'warm' | 'cold';
+    if (score >= 70) status = 'hot';
+    else if (score >= 40) status = 'warm';
+    else status = 'cold';
+
+    return { score, status };
   }
 
   getSystemPrompt(context: ConversationContext): string {

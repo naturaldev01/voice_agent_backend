@@ -4,13 +4,17 @@ import { VoiceModule } from './voice/voice.module';
 import { PatientModule } from './patient/patient.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { SupabaseModule } from './supabase/supabase.module';
+import { HealthModule } from './health/health.module';
+import { validate } from './config/env.validation';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      validate,
     }),
     SupabaseModule,
+    HealthModule,
     VoiceModule,
     PatientModule,
     ConversationModule,
