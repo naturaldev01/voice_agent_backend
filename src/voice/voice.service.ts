@@ -3,12 +3,21 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { SupabaseService } from '../supabase/supabase.service';
 
+export interface KnowledgeEntry {
+  scenario: string;
+  bad_response: string;
+  ideal_response: string;
+  comment?: string;
+  category: string;
+}
+
 export interface ConversationContext {
   conversationId: string;
   patientId?: string;
   agentName: string;
   agentGender: 'male' | 'female';
   language: string;
+  knowledgeBase: KnowledgeEntry[];
   patientInfo: {
     fullName?: string;
     phone?: string;
@@ -45,6 +54,9 @@ export class VoiceService {
     // Get random agent with name and gender for the detected language
     const agent = await this.supabaseService.getRandomAgent(language);
     
+    // Get knowledge base entries for this language
+    const knowledgeBase = await this.getKnowledgeBaseForLanguage(language);
+    
     // Create conversation in database
     const conversation = await this.supabaseService.createConversation({
       agent_name: agent.name,
@@ -58,12 +70,36 @@ export class VoiceService {
       agentName: agent.name,
       agentGender: agent.gender,
       language,
+      knowledgeBase,
       patientInfo: {},
       messageHistory: [],
     };
 
     this.conversations.set(conversation.id, context);
     return context;
+  }
+
+  private async getKnowledgeBaseForLanguage(language: string): Promise<KnowledgeEntry[]> {
+    try {
+      const client = this.supabaseService.getClient();
+      const { data, error } = await client
+        .from('ai_knowledge_base')
+        .select('scenario, bad_response, ideal_response, comment, category')
+        .eq('language', language)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(15);
+
+      if (error) {
+        this.logger.error('Error fetching knowledge base:', error);
+        return [];
+      }
+
+      return data || [];
+    } catch (error) {
+      this.logger.error('Error in getKnowledgeBaseForLanguage:', error);
+      return [];
+    }
   }
 
   getConversation(conversationId: string): ConversationContext | undefined {
@@ -75,9 +111,14 @@ export class VoiceService {
     if (context && context.language !== language) {
       // Get a new agent with name and gender for the new language
       const agent = await this.supabaseService.getRandomAgent(language);
+      
+      // Get knowledge base for the new language
+      const knowledgeBase = await this.getKnowledgeBaseForLanguage(language);
+      
       context.language = language;
       context.agentName = agent.name;
       context.agentGender = agent.gender;
+      context.knowledgeBase = knowledgeBase;
       
       // Update in database
       await this.supabaseService.updateConversation(conversationId, {
@@ -279,6 +320,38 @@ Write in a professional medical CRM style.`;
     return { score, status };
   }
 
+  private formatKnowledgeBase(knowledgeBase: KnowledgeEntry[]): string {
+    if (!knowledgeBase || knowledgeBase.length === 0) {
+      return '';
+    }
+
+    const examples = knowledgeBase
+      .slice(0, 10)
+      .map((entry, index) => {
+        let example = `Example ${index + 1} [${entry.category}]:`;
+        example += `\n  Scenario: ${entry.scenario}`;
+        if (entry.bad_response) {
+          example += `\n  ❌ Wrong response: "${entry.bad_response}"`;
+        }
+        example += `\n  ✅ Correct response: "${entry.ideal_response}"`;
+        if (entry.comment) {
+          example += `\n  Note: ${entry.comment}`;
+        }
+        return example;
+      })
+      .join('\n\n');
+
+    return `
+LEARNED CORRECTIONS - FOLLOW THESE EXAMPLES CAREFULLY:
+The following are real examples from previous conversations where responses were corrected.
+Study these carefully and apply the same improvements in similar situations:
+
+${examples}
+
+Remember: These corrections come from real feedback. Apply the same principles to similar scenarios.
+`;
+  }
+
   getSystemPrompt(context: ConversationContext): string {
     const languageGreetings: Record<string, string> = {
       tr: `Merhaba, ben Natural Clinic'ten ${context.agentName}. Size nasıl yardımcı olabilirim?`,
@@ -376,6 +449,8 @@ CRITICAL RESTRICTION - YOU MUST FOLLOW:
 - NEVER pretend to be a general AI assistant
 - NEVER answer questions about other topics, other clinics, general knowledge, etc.
 - You are ${context.agentName} from Natural Clinic Istanbul, Turkey. This is your ONLY identity.
+
+${this.formatKnowledgeBase(context.knowledgeBase)}
 
 Current patient info: ${JSON.stringify(context.patientInfo, null, 2)}
 Conversation history: ${context.messageHistory.slice(-5).map(m => `${m.role}: ${m.content}`).join('\n')}`;

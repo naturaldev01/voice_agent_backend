@@ -5,6 +5,7 @@ import { PatientModule } from './patient/patient.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
 import { validate } from './config/env.validation';
 
 @Module({
@@ -15,6 +16,7 @@ import { validate } from './config/env.validation';
     }),
     SupabaseModule,
     HealthModule,
+    AuthModule,
     VoiceModule,
     PatientModule,
     ConversationModule,
