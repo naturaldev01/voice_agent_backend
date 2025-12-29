@@ -150,7 +150,14 @@ export class OpenAIRealtimeService implements OnModuleDestroy {
             {
               type: 'function',
               name: 'detect_language',
-              description: 'IMPORTANT: Call this function IMMEDIATELY when you detect that the patient is speaking in a different language than the current session language. This updates the transcription and voice settings for better accuracy.',
+              description: `CRITICAL PRIORITY FUNCTION - MUST BE CALLED FIRST: 
+              Call this function IMMEDIATELY and BEFORE responding when the patient speaks in a DIFFERENT language than the current session language (${context.language}). 
+              This function updates your voice, transcription settings, and system instructions to match the patient's language.
+              Examples:
+              - If session is 'en' but patient says "Merhaba" → call with 'tr'
+              - If session is 'en' but patient says "Bonjour" → call with 'fr'  
+              - If session is 'tr' but patient says "Hello" → call with 'en'
+              You MUST call this before generating any response in a mismatched language.`,
               parameters: {
                 type: 'object',
                 properties: {
@@ -275,19 +282,34 @@ export class OpenAIRealtimeService implements OnModuleDestroy {
           break;
           
         case 'detect_language':
-          await this.voiceService.updateConversationLanguage(conversationId, parsedArgs.language);
-          // Get updated context with new agent name
-          const updatedContext = this.voiceService.getConversation(conversationId);
-          if (updatedContext) {
-            // Update session with new language settings
-            this.updateSessionLanguage(conversationId, updatedContext);
+          const newLanguage = parsedArgs.language;
+          const oldLanguage = context.language;
+          
+          // Only update if language actually changed
+          if (newLanguage !== oldLanguage) {
+            await this.voiceService.updateConversationLanguage(conversationId, newLanguage);
+            // Get updated context with new agent name
+            const updatedContext = this.voiceService.getConversation(conversationId);
+            if (updatedContext) {
+              // Update session with new language settings
+              this.updateSessionLanguage(conversationId, updatedContext);
+              
+              // Log the language switch
+              this.logger.log(`Language switched from ${oldLanguage} to ${newLanguage} for conversation ${conversationId}`);
+            }
+            result = { 
+              success: true, 
+              message: `Language switched from ${oldLanguage} to ${newLanguage}. You MUST now speak ONLY in ${this.getLanguageName(newLanguage)}. Your new name is ${updatedContext?.agentName}. Acknowledge this change by greeting the patient again in ${this.getLanguageName(newLanguage)}.`,
+              newAgentName: updatedContext?.agentName || context.agentName,
+              newLanguage: newLanguage,
+            };
+          } else {
+            result = { 
+              success: true, 
+              message: `Language is already set to ${newLanguage}. Continue in ${this.getLanguageName(newLanguage)}.`,
+            };
           }
-          result = { 
-            success: true, 
-            message: `Language updated to ${parsedArgs.language}. Please continue the conversation in ${parsedArgs.language}.`,
-            newAgentName: updatedContext?.agentName || context.agentName,
-          };
-          console.log(`Language detected and updated to: ${parsedArgs.language}`);
+          console.log(`Language detected: ${newLanguage} (was: ${oldLanguage})`);
           break;
           
         default:
@@ -393,6 +415,19 @@ export class OpenAIRealtimeService implements OnModuleDestroy {
     };
     
     return prompts[language] || prompts['en'];
+  }
+
+  // Get full language name from code
+  private getLanguageName(code: string): string {
+    const names: Record<string, string> = {
+      'tr': 'Turkish',
+      'en': 'English',
+      'de': 'German',
+      'ar': 'Arabic',
+      'fr': 'French',
+      'ru': 'Russian',
+    };
+    return names[code] || 'English';
   }
 
   closeSession(conversationId: string): void {
